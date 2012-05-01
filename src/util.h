@@ -172,8 +172,9 @@ boost::filesystem::path GetConfigFile();
 boost::filesystem::path GetPidFile();
 void CreatePidFile(const boost::filesystem::path &path, pid_t pid);
 void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);
-bool GetStartOnSystemStartup();
-bool SetStartOnSystemStartup(bool fAutoStart);
+#ifdef WIN32
+boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate = true);
+#endif
 void ShrinkDebugFile();
 int GetRandInt(int nMax);
 uint64 GetRand(uint64 nMax);
@@ -294,6 +295,7 @@ typedef CMutexLock<CCriticalSection> CCriticalBlock;
         (cs).lock(); \
     }
 
+<<<<<<< HEAD
 #define LEAVE_CRITICAL_SECTION(cs) \
     { \
         (cs).unlock(); \
@@ -396,6 +398,8 @@ public:
     }
 };
 
+=======
+>>>>>>> 67d4cba... Move GetStartOnSystemStartup and SetStartOnSystemStartup to GUI code
 inline std::string i64tostr(int64 n)
 {
     return strprintf("%"PRI64d, n);
