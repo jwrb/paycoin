@@ -140,15 +140,26 @@ bool AppInit(int argc, char* argv[])
     return fRet;
 }
 
+bool static InitError(const std::string &str)
+{
+    ThreadSafeMessageBox(str, _("Bitcoin"), wxOK | wxMODAL);
+    return false;
+
+}
+
+bool static InitWarning(const std::string &str)
+{
+    ThreadSafeMessageBox(str, _("Bitcoin"), wxOK | wxICON_EXCLAMATION | wxMODAL);
+    return true;
+}
+
+
 bool static Bind(const CService &addr) {
     if (IsLimited(addr))
         return false;
     std::string strError;
     if (!BindListenPort(addr, strError))
-    {
-        ThreadSafeMessageBox(strError, _("Paycoin"), wxOK | wxMODAL);
-        return false;
-    }
+        return InitError(strError);
     return true;
 }
 
@@ -381,10 +392,8 @@ bool AppInit2(int argc, char* argv[])
     if (file) fclose(file);
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
     if (!lock.try_lock())
-    {
-        ThreadSafeMessageBox(strprintf(_("Cannot obtain a lock on data directory %s.  Paycoin is probably already running."), GetDataDir().string().c_str()), _("Paycoin"), wxOK|wxMODAL);
-        return false;
-    }
+        return InitError(strprintf(_("Cannot obtain a lock on data directory %s.  Bitcoin is probably already running."), GetDataDir().string().c_str()));
+
 
     // Check and update minium version protocol after a given time.
     if (time(NULL) >= ENABLE_PHASE_TWO_PRIMES)
@@ -447,8 +456,8 @@ bool AppInit2(int argc, char* argv[])
         {
             strErrors << _("Wallet needed to be rewritten: restart Paycoin to complete") << "\n";
             printf("%s", strErrors.str().c_str());
-            ThreadSafeMessageBox(strErrors.str(), _("Paycoin"), wxOK | wxICON_ERROR | wxMODAL);
-            return false;
+            return InitError(strErrors.str());
+
         }
         else
             strErrors << _("Error loading wallet.dat") << "\n";
@@ -518,10 +527,8 @@ bool AppInit2(int argc, char* argv[])
     printf("mapAddressBook.size() = %d\n",  pwalletMain->mapAddressBook.size());
 
     if (!strErrors.str().empty())
-    {
-        ThreadSafeMessageBox(strErrors.str(), _("Paycoin"), wxOK | wxICON_ERROR | wxMODAL);
-        return false;
-    }
+        return InitError(strErrors.str());
+
 
     // Add wallet transactions that aren't already in a block to mapTransactions
     pwalletMain->ReacceptWalletTransactions();
@@ -574,20 +581,17 @@ bool AppInit2(int argc, char* argv[])
         fUseProxy = true;
         addrProxy = CService(mapArgs["-proxy"], 9050);
         if (!addrProxy.IsValid())
-        {
-            ThreadSafeMessageBox(_("Invalid -proxy address"), _("Paycoin"), wxOK | wxMODAL);
-            return false;
-        }
+            return InitError(strprintf(_("Invalid -proxy address: '%s'"), mapArgs["-proxy"].c_str()));
+
     }
 
     if (mapArgs.count("-noproxy"))
     {
         BOOST_FOREACH(std::string snet, mapMultiArgs["-noproxy"]) {
             enum Network net = ParseNetwork(snet);
-            if (net == NET_UNROUTABLE) {
-                ThreadSafeMessageBox(_("Unknown network specified in -noproxy"), _("Paycoin"), wxOK | wxMODAL);
-                return false;
-            }
+
+            if (net == NET_UNROUTABLE)
+                return InitError(strprintf(_("Unknown network specified in -noproxy: '%s'"), snet.c_str()));
             SetNoProxy(net);
         }
     }
@@ -617,16 +621,9 @@ bool AppInit2(int argc, char* argv[])
         std::set<enum Network> nets;
         BOOST_FOREACH(std::string snet, mapMultiArgs["-onlynet"]) {
             enum Network net = ParseNetwork(snet);
-            if (net == NET_UNROUTABLE) {
-                ThreadSafeMessageBox(_("Unknown network specified in -onlynet"), _("Paycoin"), wxOK | wxMODAL);
-                return false;
-            }
-            nets.insert(net);
-        }
-        for (int n = 0; n < NET_MAX; n++) {
-            enum Network net = (enum Network)n;
-            if (!nets.count(net))
-                SetLimited(net);
+            if (net == NET_UNROUTABLE)
+                return InitError(strprintf(_("Unknown network specified in -blocknet: '%s'"), snet.c_str()));
+            SetLimited(net);
         }
     }
 
@@ -636,6 +633,8 @@ bool AppInit2(int argc, char* argv[])
         fNameLookup = true;
     fNoListen = !GetBoolArg("-listen", true);
     nSocksVersion = GetArg("-socks", 5);
+    if (nSocksVersion != 4 && nSocksVersion != 5)
+        return InitError(strprintf(_("Unknown -socks proxy version requested: %i"), nSocksVersion));
 
     BOOST_FOREACH(string strDest, mapMultiArgs["-seednode"])
         AddOneShot(strDest);
@@ -652,7 +651,10 @@ bool AppInit2(int argc, char* argv[])
         std::string strError;
         if (mapArgs.count("-bind")) {
             BOOST_FOREACH(std::string strBind, mapMultiArgs["-bind"]) {
-                fBound |= Bind(CService(strBind, GetListenPort(), false));
+                CService addrBind(strBind, GetListenPort(), false);
+                if (!addrBind.IsValid())
+                    return InitError(strprintf(_("Cannot resolve -bind address: '%s'"), strBind.c_str()));
+                fBound |= Bind(addrBind);
             }
         } else {
             struct in_addr inaddr_any;
@@ -668,35 +670,21 @@ bool AppInit2(int argc, char* argv[])
 
     if (mapArgs.count("-externalip"))
     {
-        BOOST_FOREACH(string strAddr, mapMultiArgs["-externalip"])
-            AddLocal(CNetAddr(strAddr, fNameLookup), LOCAL_MANUAL);
+        BOOST_FOREACH(string strAddr, mapMultiArgs["-externalip"]) {
+            CService addrLocal(strAddr, GetListenPort(), fNameLookup);
+            if (!addrLocal.IsValid())
+                return InitError(strprintf(_("Cannot resolve -externalip address: '%s'"), strAddr.c_str()));
+            AddLocal(CService(strAddr, GetListenPort(), fNameLookup), LOCAL_MANUAL);
+        }
     }
 
     if (mapArgs.count("-paytxfee"))
     {
-        if (!ParseMoney(mapArgs["-paytxfee"], nTransactionFee) || nTransactionFee < MIN_TX_FEE)
-        {
-            ThreadSafeMessageBox(_("Invalid amount for -paytxfee=<amount>"), _("Paycoin"), wxOK | wxMODAL);
-            return false;
-        }
+        if (!ParseMoney(mapArgs["-paytxfee"], nTransactionFee))
+            return InitError(strprintf(_("Invalid amount for -paytxfee=<amount>: '%s'"), mapArgs["-paytxfee"].c_str()));
         if (nTransactionFee > 0.25 * COIN)
-            ThreadSafeMessageBox(_("Warning: -paytxfee is set very high.  This is the transaction fee you will pay if you send a transaction."), _("Paycoin"), wxOK | wxICON_EXCLAMATION | wxMODAL);
-    }
+            InitWarning(_("Warning: -paytxfee is set very high.  This is the transaction fee you will pay if you send a transaction."));
 
-    if (mapArgs.count("-reservebalance")) // paycoin: reserve balance amount
-    {
-        int64 nReserveBalance = 0;
-        if (!ParseMoney(mapArgs["-reservebalance"], nReserveBalance))
-        {
-            ThreadSafeMessageBox(_("Invalid amount for -reservebalance=<amount>"), _("Paycoin"), wxOK | wxMODAL);
-            return false;
-        }
-    }
-
-    if (mapArgs.count("-checkpointkey")) // paycoin: checkpoint master priv key
-    {
-        if (!Checkpoints::SetCheckpointPrivKey(GetArg("-checkpointkey", "")))
-            ThreadSafeMessageBox(_("Unable to sign checkpoint, wrong checkpointkey?\n"), _("Paycoin"), wxOK | wxMODAL);
     }
 
     //
@@ -707,8 +695,8 @@ bool AppInit2(int argc, char* argv[])
 
     RandAddSeedPerfmon();
 
-    if (!NewThread(StartNode, NULL))
-        ThreadSafeMessageBox(_("Error: NewThread(StartNode) failed"), _("Paycoin"), wxOK | wxMODAL);
+    if (!CreateThread(StartNode, NULL))
+        InitError(_("Error: could not start node"));
 
     if (fServer)
         NewThread(ThreadRPCServer, NULL);
