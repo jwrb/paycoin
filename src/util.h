@@ -25,6 +25,10 @@ typedef int pid_t; /* define for windows compatibility */
 #include <boost/thread.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/path.hpp>
+#include <boost/interprocess/sync/interprocess_recursive_mutex.hpp>
+#include <boost/interprocess/sync/scoped_lock.hpp>
+#include <boost/interprocess/sync/interprocess_semaphore.hpp>
+#include <boost/interprocess/sync/lock_options.hpp>
 #include <boost/date_time/gregorian/gregorian_types.hpp>
 #include <boost/date_time/posix_time/posix_time_types.hpp>
 
@@ -191,6 +195,206 @@ void runCommand(std::string strCommand);
 
 
 
+
+/** Wrapped boost mutex: supports recursive locking, but no waiting  */
+typedef boost::interprocess::interprocess_recursive_mutex CCriticalSection;
+
+/** Wrapped boost mutex: supports waiting but not recursive locking */
+typedef boost::interprocess::interprocess_mutex CWaitableCriticalSection;
+
+#ifdef DEBUG_LOCKORDER
+void EnterCritical(const char* pszName, const char* pszFile, int nLine, void* cs, bool fTry = false);
+void LeaveCritical();
+#else
+void static inline EnterCritical(const char* pszName, const char* pszFile, int nLine, void* cs, bool fTry = false) {}
+void static inline LeaveCritical() {}
+#endif
+
+/** Wrapper around boost::interprocess::scoped_lock */
+template<typename Mutex>
+class CMutexLock
+{
+private:
+    boost::interprocess::scoped_lock<Mutex> lock;
+public:
+
+    void Enter(const char* pszName, const char* pszFile, int nLine)
+    {
+        if (!lock.owns())
+        {
+            EnterCritical(pszName, pszFile, nLine, (void*)(lock.mutex()));
+#ifdef DEBUG_LOCKCONTENTION
+            if (!lock.try_lock())
+            {
+                printf("LOCKCONTENTION: %s\n", pszName);
+                printf("Locker: %s:%d\n", pszFile, nLine);
+#endif
+            lock.lock();
+#ifdef DEBUG_LOCKCONTENTION
+            }
+#endif
+        }
+    }
+
+    void Leave()
+    {
+        if (lock.owns())
+        {
+            lock.unlock();
+            LeaveCritical();
+        }
+    }
+
+    bool TryEnter(const char* pszName, const char* pszFile, int nLine)
+    {
+        if (!lock.owns())
+        {
+            EnterCritical(pszName, pszFile, nLine, (void*)(lock.mutex()), true);
+            lock.try_lock();
+            if (!lock.owns())
+                LeaveCritical();
+        }
+        return lock.owns();
+    }
+
+    CMutexLock(Mutex& mutexIn, const char* pszName, const char* pszFile, int nLine, bool fTry = false) : lock(mutexIn, boost::interprocess::defer_lock)
+    {
+        if (fTry)
+            TryEnter(pszName, pszFile, nLine);
+        else
+            Enter(pszName, pszFile, nLine);
+    }
+
+    ~CMutexLock()
+    {
+        if (lock.owns())
+            LeaveCritical();
+    }
+
+    operator bool()
+    {
+        return lock.owns();
+    }
+
+    boost::interprocess::scoped_lock<Mutex> &GetLock()
+    {
+        return lock;
+    }
+};
+
+typedef CMutexLock<CCriticalSection> CCriticalBlock;
+
+#define LOCK(cs) CCriticalBlock criticalblock(cs, #cs, __FILE__, __LINE__)
+#define LOCK2(cs1,cs2) CCriticalBlock criticalblock1(cs1, #cs1, __FILE__, __LINE__),criticalblock2(cs2, #cs2, __FILE__, __LINE__)
+#define TRY_LOCK(cs,name) CCriticalBlock name(cs, #cs, __FILE__, __LINE__, true)
+
+#define ENTER_CRITICAL_SECTION(cs) \
+    { \
+        EnterCritical(#cs, __FILE__, __LINE__, (void*)(&cs)); \
+        (cs).lock(); \
+    }
+
+#define LEAVE_CRITICAL_SECTION(cs) \
+    { \
+        (cs).unlock(); \
+        LeaveCritical(); \
+    }
+
+#ifdef MAC_OSX
+// boost::interprocess::interprocess_semaphore seems to spinlock on OSX; prefer polling instead
+class CSemaphore
+{
+private:
+    CCriticalSection cs;
+    int val;
+
+public:
+    CSemaphore(int init) : val(init) {}
+
+    void wait() {
+        do {
+            {
+                LOCK(cs);
+                if (val>0) {
+                    val--;
+                    return;
+                }
+            }
+            Sleep(100);
+        } while(1);
+    }
+
+    bool try_wait() {
+        LOCK(cs);
+        if (val>0) {
+            val--;
+            return true;
+        }
+        return false;
+    }
+
+    void post() {
+        LOCK(cs);
+        val++;
+    }
+};
+#else
+typedef boost::interprocess::interprocess_semaphore CSemaphore;
+#endif
+
+/** RAII-style semaphore lock */
+class CSemaphoreGrant
+{
+private:
+    CSemaphore *sem;
+    bool fHaveGrant;
+
+public:
+    void Acquire() {
+        if (fHaveGrant)
+            return;
+        sem->wait();
+        fHaveGrant = true;
+    }
+
+    void Release() {
+        if (!fHaveGrant)
+            return;
+        sem->post();
+        fHaveGrant = false;
+    }
+
+    bool TryAcquire() {
+        if (!fHaveGrant && sem->try_wait())
+            fHaveGrant = true;
+        return fHaveGrant;
+    }
+
+    void MoveTo(CSemaphoreGrant &grant) {
+        grant.Release();
+        grant.sem = sem;
+        grant.fHaveGrant = fHaveGrant;
+        sem = NULL;
+        fHaveGrant = false;
+    }
+
+    CSemaphoreGrant() : sem(NULL), fHaveGrant(false) {}
+
+    CSemaphoreGrant(CSemaphore &sema, bool fTry = false) : sem(&sema), fHaveGrant(false) {
+        if (fTry)
+            TryAcquire();
+        else
+            Acquire();
+    }
+
+    ~CSemaphoreGrant() {
+        Release();
+    }
+
+    operator bool() {
+        return fHaveGrant;
+    }
+};
 
 inline std::string i64tostr(int64 n)
 {
@@ -516,65 +720,15 @@ public:
     }
 };
 
+bool NewThread(void(*pfn)(void*), void* parg);
 
-
-
-
-
-
-
-
-
-// Note: It turns out we might have been able to use boost::thread
-// by using TerminateThread(boost::thread.native_handle(), 0);
 #ifdef WIN32
-typedef HANDLE bitcoin_pthread_t;
-
-inline bitcoin_pthread_t CreateThread(void(*pfn)(void*), void* parg, bool fWantHandle=false)
-{
-    DWORD nUnused = 0;
-    HANDLE hthread =
-        CreateThread(
-            NULL,                        // default security
-            0,                           // inherit stack size from parent
-            (LPTHREAD_START_ROUTINE)pfn, // function pointer
-            parg,                        // argument
-            0,                           // creation option, start immediately
-            &nUnused);                   // thread identifier
-    if (hthread == NULL)
-    {
-        printf("Error: CreateThread() returned %d\n", GetLastError());
-        return (bitcoin_pthread_t)0;
-    }
-    if (!fWantHandle)
-    {
-        CloseHandle(hthread);
-        return (bitcoin_pthread_t)-1;
-    }
-    return hthread;
-}
 
 inline void SetThreadPriority(int nPriority)
 {
     SetThreadPriority(GetCurrentThread(), nPriority);
 }
 #else
-inline pthread_t CreateThread(void(*pfn)(void*), void* parg, bool fWantHandle=false)
-{
-    pthread_t hthread = 0;
-    int ret = pthread_create(&hthread, NULL, (void*(*)(void*))pfn, parg);
-    if (ret != 0)
-    {
-        printf("Error: pthread_create() returned %d\n", ret);
-        return (pthread_t)0;
-    }
-    if (!fWantHandle)
-    {
-        pthread_detach(hthread);
-        return (pthread_t)-1;
-    }
-    return hthread;
-}
 
 #define THREAD_PRIORITY_LOWEST          PRIO_MAX
 #define THREAD_PRIORITY_BELOW_NORMAL    2
@@ -609,4 +763,3 @@ inline uint32_t ByteReverse(uint32_t value)
 }
 
 #endif
-

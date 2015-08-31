@@ -475,11 +475,6 @@ bool CTxDB::WriteBlockIndex(const CDiskBlockIndex& blockindex)
     return Write(make_pair(string("blockindex"), blockindex.GetBlockHash()), blockindex);
 }
 
-bool CTxDB::EraseBlockIndex(uint256 hash)
-{
-    return Erase(make_pair(string("blockindex"), hash));
-}
-
 bool CTxDB::ReadHashBestChain(uint256& hashBestChain)
 {
     return Read(string("hashBestChain"), hashBestChain);
@@ -518,16 +513,6 @@ bool CTxDB::ReadCheckpointPubKey(string& strPubKey)
 bool CTxDB::WriteCheckpointPubKey(const string& strPubKey)
 {
     return Write(string("strCheckpointPubKey"), strPubKey);
-}
-
-bool CTxDB::ReadV04UpgradeTime(unsigned int& nUpgradeTime)
-{
-    return Read(string("nProtocolV04UpgradeTime"), nUpgradeTime);
-}
-
-bool CTxDB::WriteV04UpgradeTime(const unsigned int& nUpgradeTime)
-{
-    return Write(string("nProtocolV04UpgradeTime"), nUpgradeTime);
 }
 
 CBlockIndex static * InsertBlockIndex(uint256 hash)

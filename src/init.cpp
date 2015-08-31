@@ -17,6 +17,7 @@
 #include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem/convenience.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <ctime>
 
 #ifndef WIN32
@@ -27,7 +28,7 @@ using namespace std;
 using namespace boost;
 
 CWallet* pwalletMain;
-int MIN_PROTO_VERSION = 70002;
+int MIN_PROTO_VERSION = 70003;
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -49,7 +50,7 @@ void StartShutdown()
     QueueShutdown();
 #else
     // Without UI, Shutdown() can simply be started in a new thread
-    CreateThread(Shutdown, NULL);
+    NewThread(Shutdown, NULL);
 #endif
 }
 
@@ -77,7 +78,7 @@ void Shutdown(void* parg)
         boost::filesystem::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
         delete pwalletMain;
-        CreateThread(ExitTimeout, NULL);
+        NewThread(ExitTimeout, NULL);
         Sleep(50);
         printf("Paycoin exiting\n\n");
         fExit = true;
@@ -162,10 +163,22 @@ bool AppInit2(int argc, char* argv[])
     // Disable confusing "helpful" text message on abort, Ctrl+C
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
-#ifndef WIN32
-    umask(077);
+#ifdef WIN32
+    // Enable Data Execution Prevention (DEP)
+    // Minimum supported OS versions: WinXP SP3, WinVista >= SP1, Win Server 2008
+    // A failure is non-critical and needs no further attention!
+#ifndef PROCESS_DEP_ENABLE
+// We define this here, because GCCs winbase.h limits this to _WIN32_WINNT >= 0x0601 (Windows 7),
+// which is not correct. Can be removed, when GCCs winbase.h is fixed!
+#define PROCESS_DEP_ENABLE 0x00000001
+#endif
+    typedef BOOL (WINAPI *PSETPROCDEPPOL)(DWORD);
+    PSETPROCDEPPOL setProcDEPPol = (PSETPROCDEPPOL)GetProcAddress(GetModuleHandleA("Kernel32.dll"), "SetProcessDEPPolicy");
+    if (setProcDEPPol != NULL) setProcDEPPol(PROCESS_DEP_ENABLE);
 #endif
 #ifndef WIN32
+    umask(077);
+
     // Clean shutdown on SIGTERM
     struct sigaction sa;
     sa.sa_handler = HandleSIGTERM;
@@ -315,7 +328,7 @@ bool AppInit2(int argc, char* argv[])
 
 #ifndef QT_GUI
     for (int i = 1; i < argc; i++)
-        if (!IsSwitchChar(argv[i][0]) && !(strlen(argv[i]) >= 7 && strncasecmp(argv[i], "paycoin:", 7) == 0))
+        if (!IsSwitchChar(argv[i][0]) && !boost::algorithm::istarts_with(argv[i], "paycoin:"))
             fCommandLine = true;
 
     if (fCommandLine)
@@ -372,12 +385,9 @@ bool AppInit2(int argc, char* argv[])
         return false;
     }
 
-    /* Check and update minium version protocol after a given time (same time
-     * as resetting the primenode stake rates; do this here to insure that it's
-     * done before attempting to load the blockchain, etc (this is also why we
-     * use a time instead of a block number). */
-    if (time(NULL) >= END_PRIME_PHASE_ONE)
-        MIN_PROTO_VERSION = 70003;
+    // Check and update minium version protocol after a given time.
+    if (time(NULL) >= ENABLE_PHASE_TWO_PRIMES)
+        MIN_PROTO_VERSION = 70004;
 
     std::ostringstream strErrors;
     //
@@ -686,11 +696,11 @@ bool AppInit2(int argc, char* argv[])
 
     RandAddSeedPerfmon();
 
-    if (!CreateThread(StartNode, NULL))
-        ThreadSafeMessageBox(_("Error: CreateThread(StartNode) failed"), _("Paycoin"), wxOK | wxMODAL);
+    if (!NewThread(StartNode, NULL))
+        ThreadSafeMessageBox(_("Error: NewThread(StartNode) failed"), _("Paycoin"), wxOK | wxMODAL);
 
     if (fServer)
-        CreateThread(ThreadRPCServer, NULL);
+        NewThread(ThreadRPCServer, NULL);
 
 #ifdef QT_GUI
     if (GetStartOnSystemStartup())

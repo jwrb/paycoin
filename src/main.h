@@ -8,7 +8,6 @@
 #define BITCOIN_MAIN_H
 
 #include "bignum.h"
-#include "sync.h"
 #include "net.h"
 #include "script.h"
 
@@ -68,6 +67,8 @@ static const int MAX_TIME_SINCE_BEST_BLOCK = 10; // how many seconds to wait bef
 // Reset all primenode stakerates to 100% after the given date
 static const unsigned int RESET_PRIMERATES = 1429531200; // Mon, 20 Apr 2015 12:00:00 GMT
 static const unsigned int END_PRIME_PHASE_ONE = 1435752000; // Wed, 01 Jul 2015 12:00:00 GMT
+// Enable phase 2 primenodes because of issue w/ IsProofOfStake check in previous update
+static const unsigned int ENABLE_PHASE_TWO_PRIMES = 1442318400; // Tue, 15 Sep 2015 12:00:00 GMT
 
 #ifdef USE_UPNP
 static const int fHaveUPnP = true;
@@ -115,8 +116,8 @@ extern std::map<uint256, CBlock*> mapOrphanBlocks;
 // Settings
 extern int64 nTransactionFee;
 
-
-
+// Minimum disk space required - used in CheckDiskSpace()
+static const uint64 nMinDiskSpace = 52428800;
 
 
 class CReserveKey;
@@ -1304,21 +1305,6 @@ public:
         return IsProofOfWork() ? CheckProofOfWork(GetBlockHash(), nBits) : true;
     }
 
-    bool EraseBlockFromDisk()
-    {
-        // Open history file
-        CAutoFile fileout = CAutoFile(OpenBlockFile(nFile, nBlockPos, "rb+"), SER_DISK, CLIENT_VERSION);
-        if (!fileout)
-            return false;
-
-        // Overwrite with empty null block
-        CBlock block;
-        block.SetNull();
-        fileout << block;
-
-        return true;
-    }
-
     enum { nMedianTimeSpan=11 };
 
     int64 GetMedianTimePast() const
@@ -1771,7 +1757,7 @@ public:
 
     uint256 GetHash() const
     {
-        return SerializeHash(*this);
+        return Hash(this->vchMsg.begin(), this->vchMsg.end());
     }
 
     bool IsInEffect() const
@@ -1843,7 +1829,7 @@ public:
 
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs);
-    bool addUnchecked(CTransaction &tx);
+    bool addUnchecked(const uint256& hash, CTransaction &tx);
     bool remove(CTransaction &tx);
     void queryHashes(std::vector<uint256>& vtxid);
 
