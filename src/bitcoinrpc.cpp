@@ -20,14 +20,19 @@
 
 #undef printf
 #include <boost/asio.hpp>
+#include <boost/asio/ip/v6_only.hpp>
+#include <boost/bind.hpp>
 #include <boost/assign/list_of.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/foreach.hpp>
 #include <boost/iostreams/concepts.hpp>
 #include <boost/iostreams/stream.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/shared_ptr.hpp>
+#include <list>
 typedef boost::asio::ssl::stream<boost::asio::ip::tcp::socket> SSLStream;
 
 #define printf OutputDebugStringF
@@ -3706,10 +3711,22 @@ void ErrorReply(std::ostream& stream, const Object& objError, const Value& id)
     stream << HTTPReply(nStatus, strReply) << std::flush;
 }
 
-bool ClientAllowed(const string& strAddress)
+bool ClientAllowed(const boost::asio::ip::address& address)
 {
-    if (strAddress == asio::ip::address_v4::loopback().to_string())
+    // Make sure that IPv4-compatible and IPv4-mapped IPv6 addresses are treated as IPv4 addresses
+    if (address.is_v6()
+     && (address.to_v6().is_v4_compatible()
+      || address.to_v6().is_v4_mapped()))
+        return ClientAllowed(address.to_v6().to_v4());
+
+    if (address == asio::ip::address_v4::loopback()
+     || address == asio::ip::address_v6::loopback()
+     || (address.is_v4()
+         // Chech whether IPv4 addresses match 127.0.0.0/8 (loopback subnet)
+      && (address.to_v4().to_ulong() & 0xff000000) == 0x7f000000))
         return true;
+
+    const string strAddress = address.to_string();
     const vector<string>& vAllow = mapMultiArgs["-rpcallowip"];
     BOOST_FOREACH(string strAllow, vAllow)
         if (WildcardMatch(strAddress, strAllow))
@@ -3720,9 +3737,10 @@ bool ClientAllowed(const string& strAddress)
 //
 // IOStream device that speaks SSL but can also speak non-SSL
 //
+template <typename Protocol>
 class SSLIOStreamDevice : public iostreams::device<iostreams::bidirectional> {
 public:
-    SSLIOStreamDevice(SSLStream &streamIn, bool fUseSSLIn) : stream(streamIn)
+    SSLIOStreamDevice(asio::ssl::stream<typename Protocol::socket> &streamIn, bool fUseSSLIn) : stream(streamIn)
     {
         fUseSSL = fUseSSLIn;
         fNeedHandshake = fUseSSLIn;
@@ -3766,7 +3784,7 @@ public:
 private:
     bool fNeedHandshake;
     bool fUseSSL;
-    SSLStream& stream;
+    asio::ssl::stream<typename Protocol::socket>& stream;
 };
 
 void ThreadRPCServer(void* parg)
