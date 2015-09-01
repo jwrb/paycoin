@@ -953,9 +953,7 @@ void ThreadSocketHandler2(void* parg)
                             }
                         }
                         if (vSend.size() > SendBufferSize()) {
-                            if (!pnode->fDisconnect)
-                                printf("socket send flood control disconnect (%d bytes)\n", vSend.size());
-                            pnode->CloseSocketDisconnect();
+                            printf("socket send buffer full warning (%d bytes)\n", vSend.size());
                         }
                     }
                 }
