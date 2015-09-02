@@ -898,8 +898,6 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     } else {
         path = GetDefaultDataDir();
     }
-    else
-        path = GetDefaultDataDir();
     if (fNetSpecific && GetBoolArg("-testnet", false))
         path /= "testnet3";
     if (!fs::exists(path))
