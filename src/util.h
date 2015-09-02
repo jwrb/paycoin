@@ -295,7 +295,6 @@ typedef CMutexLock<CCriticalSection> CCriticalBlock;
         (cs).lock(); \
     }
 
-<<<<<<< HEAD
 #define LEAVE_CRITICAL_SECTION(cs) \
     { \
         (cs).unlock(); \
@@ -398,8 +397,6 @@ public:
     }
 };
 
-=======
->>>>>>> 67d4cba... Move GetStartOnSystemStartup and SetStartOnSystemStartup to GUI code
 inline std::string i64tostr(int64 n)
 {
     return strprintf("%"PRI64d, n);
