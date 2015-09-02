@@ -695,7 +695,7 @@ bool AppInit2(int argc, char* argv[])
 
     RandAddSeedPerfmon();
 
-    if (!CreateThread(StartNode, NULL))
+    if (!NewThread(StartNode, NULL))
         InitError(_("Error: could not start node"));
 
     if (fServer)
