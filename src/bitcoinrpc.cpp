@@ -3382,7 +3382,7 @@ void ThreadRPCServer2(void* parg)
             continue;
         }
 
-        Value id = Value::null;
+        JSONRPCRequest jreq;
         try
         {
             // Parse request
@@ -3391,29 +3391,84 @@ void ThreadRPCServer2(void* parg)
                 throw JSONRPCError(-32700, "Parse error");
 
             string strReply;
-            if (valRequest.type() == obj_type) {
-              // singleton request
-              Object result;
-              result = JSONRPCExecOne(valRequest);
-              strReply = write_string(Value(result), false) + "\n";
-            } else if (valRequest.type() == array_type) {
-              // array of requests
-              strReply = JSONRPCExecBatch(valRequest.get_array());
-            } else
-              throw JSONRPCError(-32600, "Top-level object parse error");
 
-            // Send reply
-            stream << HTTPReply(200, strReply) << std::flush;
+            // singleton request
+            if (valRequest.type() == obj_type) {
+                jreq.parse(valRequest);
+
+                Value result = tableRPC.execute(jreq.strMethod, jreq.params);
+
+                // Send reply
+                strReply = JSONRPCReply(result, Value::null, jreq.id);
+
+            // array of requests
+            } else if (valRequest.type() == array_type)
+                strReply = JSONRPCExecBatch(valRequest.get_array());
+            else
+                throw JSONRPCError(-32700, "Top-level object parse error");
+                
+            conn->stream() << HTTPReply(200, strReply, fRun) << std::flush;
         }
         catch (Object& objError)
         {
-            ErrorReply(stream, objError, id);
+            ErrorReply(stream, objError, jreq.id);
         }
         catch (std::exception& e)
         {
-            ErrorReply(stream, JSONRPCError(-32700, e.what()), id);
+            ErrorReply(stream, JSONRPCError(-32700, e.what()), jreq.id);
         }
     }
+}
+
+class JSONRPCRequest
+{
+public:
+    Value id;
+    string strMethod;
+    Array params;
+
+    JSONRPCRequest() { id = Value::null; }
+    void parse(const Value& valRequest);
+};
+
+void JSONRPCRequest::parse(const Value& valRequest)
+{
+    // Parse request
+    if (!read_string(strRequest, valRequest))
+        throw JSONRPCError(-32700, "Parse error");
+}
+
+static Object JSONRPCExecOne(const Value& req)
+{
+    Object rpc_result;
+
+    JSONRPCRequest jreq;
+    try {
+        jreq.parse(req);
+
+        Value result = tableRPC.execute(jreq.strMethod, jreq.params);
+        rpc_result = JSONRPCReplyObj(result, Value::null, jreq.id);
+    }
+    catch (Object& objError)
+    {
+        rpc_result = JSONRPCReplyObj(Value::null, objError, jreq.id);
+    }
+    catch (std::exception& e)
+    {
+        rpc_result = JSONRPCReplyObj(Value::null,
+                                     JSONRPCError(-32700, e.what()), jreq.id);
+    }
+
+    return rpc_result;
+}
+
+static string JSONRPCExecBatch(const Array& vReq)
+{
+    Array ret;
+    for (unsigned int reqIdx = 0; reqIdx < vReq.size(); reqIdx++)
+        ret.push_back(JSONRPCExecOne(vReq[reqIdx]));
+
+    return write_string(Value(ret), false) + "\n";
 }
 
 json_spirit::Value CRPCTable::execute(const std::string &strMethod, const json_spirit::Array &params) const
